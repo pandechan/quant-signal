@@ -17,9 +17,9 @@ strategy:
   use_trend_filter: true
 
   # 止损/止盈（ATR 倍数，进场时计算）
-  stop_loss_atr: 2.0     # 止损价 = entry - 2*ATR
-  take_profit_atr: 3.0   # 止盈价 = entry + 3*ATR
-  trail_atr: 2.5         # trailing stop = 持仓最高价 - 2.5*ATR
+  stop_loss_atr: 3.0     # 止损价 = entry - 3*ATR（优化后）
+  take_profit_atr: 4.0   # 止盈价 = entry + 4*ATR（优化后）
+  trail_atr: 3.0         # trailing stop = 持仓最高价 - 3*ATR（优化后）
 
   # 交易成本（回测模拟）
   commission_pct: 0.0005  # 手续费 0.05%/笔
