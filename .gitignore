@@ -10,7 +10,6 @@ data/pushed.json
 
 # ML 模型文件
 models/*.pkl
-models/*.joblib
 models/*.onnx
 
 .DS_Store
