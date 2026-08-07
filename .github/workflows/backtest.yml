@@ -1,0 +1,39 @@
+name: 策略回测
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 回测天数（15m 建议 60，60m 建议 365；留空则按周期自动）
+        required: false
+        default: ''
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 执行回测
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.days }}" ]; then
+            ARGS="--days ${{ github.event.inputs.days }}"
+          fi
+          python src/backtest.py $ARGS
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          TZ: UTC
