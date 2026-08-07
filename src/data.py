@@ -111,7 +111,10 @@ def _to_timeframe(interval: str):
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
     if interval.endswith("m"):
-        return TimeFrame(int(interval[:-1]), TimeFrameUnit.Minute)
+        n = int(interval[:-1])
+        if n >= 60:
+            return TimeFrame(n // 60, TimeFrameUnit.Hour)
+        return TimeFrame(n, TimeFrameUnit.Minute)
     if interval.endswith("h"):
         return TimeFrame(int(interval[:-1]), TimeFrameUnit.Hour)
     return TimeFrame(15, TimeFrameUnit.Minute)
