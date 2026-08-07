@@ -120,9 +120,10 @@ class MLGenerator:
 
 def get_generator(name: str = "rule") -> SignalGenerator:
     """工厂方法：按名称获取信号生成器。"""
-    generators = {"rule": RuleBasedGenerator, "ml": MLGenerator}
-    cls = generators.get(name, RuleBasedGenerator)
-    return cls()
+    if name == "ml":
+        from ml_model import MLGenerator
+        return MLGenerator()
+    return RuleBasedGenerator()
 
 
 def _col(df: pd.DataFrame, prefix: str) -> str | None:

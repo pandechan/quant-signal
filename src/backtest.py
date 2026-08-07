@@ -1,11 +1,12 @@
 """回测模块：用历史数据验证策略表现。
 
-支持：ATR 止损/止盈/trailing stop、交易成本模拟、趋势过滤。
-无前视偏差：一次性计算全量指标后逐根 K 线回放。
+支持规则引擎和 ML 生成器，ATR 止损/止盈/trailing、交易成本、趋势过滤。
+ML 模式通过 predict_series 预算概率序列，高效回测。
 
 用法：
-  python src/backtest.py              # 默认天数（15m=60天, 60m=365天）
-  python src/backtest.py --days 120   # 指定天数
+  python src/backtest.py                          # 规则引擎回测
+  python src/backtest.py --generator ml           # ML 回测（需先训练或已有模型）
+  python src/backtest.py --generator ml --days 120
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from data import fetch_klines
 from features import add_indicators
-from signals import RuleBasedGenerator
+from signals import RuleBasedGenerator, get_generator
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backtest")
@@ -66,10 +67,12 @@ class BacktestResult:
 def run_backtest(
     symbol: str, name: str, interval: str, params: dict,
     days: int | None = None, df_override: pd.DataFrame | None = None,
+    generator=None, start_index: int = 0,
 ) -> BacktestResult | None:
     """对单只股票运行回测。
 
-    df_override 传入已加载的 DataFrame；若已含指标列则跳过 add_indicators（优化器复用）。
+    generator: 信号生成器，None 则用 RuleBasedGenerator。
+    start_index: 从该行开始交易（ML 回测用，训练段提供指标历史）。
     """
     if df_override is not None:
         df = df_override
@@ -87,7 +90,6 @@ def run_backtest(
         logger.warning("  %s 数据不足，跳过", symbol)
         return None
 
-    # 若未含指标列则计算（优化器传入已算好的可跳过）
     if "ATR_14" not in df.columns:
         df = add_indicators(df, params)
     df = df.dropna()
@@ -95,18 +97,29 @@ def run_backtest(
         logger.warning("  %s 有效数据不足，跳过", symbol)
         return None
 
+    if generator is None:
+        generator = RuleBasedGenerator()
+
     # 交易参数
-    stop_loss_atr = params.get("stop_loss_atr", 2.0)
-    take_profit_atr = params.get("take_profit_atr", 3.0)
-    trail_atr = params.get("trail_atr", 2.5)
+    stop_loss_atr = params.get("stop_loss_atr", 3.0)
+    take_profit_atr = params.get("take_profit_atr", 4.0)
+    trail_atr = params.get("trail_atr", 3.0)
     cost = params.get("commission_pct", 0.0005) + params.get("slippage_pct", 0.0005)
+    use_trend_filter = params.get("use_trend_filter", True)
+    trend_col = f"EMA_{params.get('trend_ema', 50)}"
+    buy_threshold = params.get("ml_buy_threshold", 0.6)
     atr_col = "ATR_14"
 
-    generator = RuleBasedGenerator()
+    # ML 预算概率序列
+    probs = None
+    if hasattr(generator, "predict_series"):
+        probs = generator.predict_series(df, params)
+
     trades: list[Trade] = []
     position: dict | None = None
+    start = max(WARMUP, start_index)
 
-    for i in range(WARMUP, len(df)):
+    for i in range(start, len(df)):
         row = df.iloc[i]
         price = float(row["close"])
         atr_val = float(row[atr_col]) if atr_col in df.columns and pd.notna(row.get(atr_col)) else None
@@ -129,21 +142,29 @@ def run_backtest(
                 entry_price = position["entry_price"]
                 pnl = (exit_price - entry_price) / entry_price * 100
                 trades.append(Trade(
-                    entry_time=position["entry_time"],
-                    entry_price=entry_price,
-                    exit_time=df.index[i],
-                    exit_price=exit_price,
-                    pnl_pct=pnl,
-                    is_win=pnl > 0,
-                    exit_reason=exit_reason,
+                    entry_time=position["entry_time"], entry_price=entry_price,
+                    exit_time=df.index[i], exit_price=exit_price,
+                    pnl_pct=pnl, is_win=pnl > 0, exit_reason=exit_reason,
                 ))
                 position = None
             continue
 
-        # ---- 空仓：看 BUY 信号进场 ----
-        slice_df = df.iloc[: i + 1]
-        sigs = generator.generate(symbol, name, interval, slice_df, params)
-        if sigs and sigs[0].direction == "BUY":
+        # ---- 空仓：判断进场 ----
+        should_enter = False
+        if probs is not None:
+            # ML 模式
+            prob = probs.iloc[i]
+            trend_ok = True
+            if use_trend_filter and trend_col in df.columns and pd.notna(row.get(trend_col)):
+                trend_ok = row["close"] > row[trend_col]
+            should_enter = prob > buy_threshold and trend_ok
+        else:
+            # 规则模式
+            slice_df = df.iloc[: i + 1]
+            sigs = generator.generate(symbol, name, interval, slice_df, params)
+            should_enter = bool(sigs and sigs[0].direction == "BUY")
+
+        if should_enter:
             entry_price = price * (1 + cost)
             if atr_val:
                 stop = entry_price - stop_loss_atr * atr_val
@@ -152,36 +173,30 @@ def run_backtest(
                 stop = entry_price * 0.97
                 target = entry_price * 1.06
             position = {
-                "entry_time": df.index[i],
-                "entry_price": entry_price,
-                "stop_loss": stop,
-                "take_profit": target,
-                "highest": entry_price,
+                "entry_time": df.index[i], "entry_price": entry_price,
+                "stop_loss": stop, "take_profit": target, "highest": entry_price,
             }
 
-    # 回测结束仍持仓则用最后收盘价平仓
+    # 期末平仓
     if position is not None:
         last_price = float(df.iloc[-1]["close"])
         exit_price = last_price * (1 - cost)
         pnl = (exit_price - position["entry_price"]) / position["entry_price"] * 100
         trades.append(Trade(
-            entry_time=position["entry_time"],
-            entry_price=position["entry_price"],
-            exit_time=df.index[-1],
-            exit_price=exit_price,
-            pnl_pct=pnl,
-            is_win=pnl > 0,
-            exit_reason="期末平仓",
+            entry_time=position["entry_time"], entry_price=position["entry_price"],
+            exit_time=df.index[-1], exit_price=exit_price,
+            pnl_pct=pnl, is_win=pnl > 0, exit_reason="期末平仓",
         ))
 
-    return _calc_metrics(symbol, name, interval, trades, df)
+    return _calc_metrics(symbol, name, interval, trades, df, start_index)
 
 
-def _calc_metrics(symbol, name, interval, trades, df) -> BacktestResult:
+def _calc_metrics(symbol, name, interval, trades, df, start_index=0) -> BacktestResult:
     r = BacktestResult(symbol=symbol, name=name, interval=interval, trades=trades)
     r.total_trades = len(trades)
 
-    first_price = float(df.iloc[0]["close"])
+    start = max(start_index, 0)
+    first_price = float(df.iloc[start]["close"])
     last_price = float(df.iloc[-1]["close"])
     r.buy_hold_return_pct = (last_price - first_price) / first_price * 100
 
@@ -256,6 +271,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="策略回测")
     parser.add_argument("--days", type=int, default=None,
                         help="回测天数（不指定则 15m=60天, 60m=365天）")
+    parser.add_argument("--generator", default="rule", choices=["rule", "ml"],
+                        help="信号生成器：rule 或 ml")
     args = parser.parse_args()
 
     with open(ROOT / "config" / "watchlist.yaml", encoding="utf-8") as f:
@@ -264,11 +281,13 @@ def main() -> int:
         st = yaml.safe_load(f)
     params = st.get("strategy", {})
 
+    generator = get_generator(args.generator)
+
     results: list[BacktestResult] = []
     for item in wl.get("watchlist", []):
         r = run_backtest(
             item["symbol"], item.get("name", item["symbol"]),
-            item.get("interval", "15m"), params, args.days,
+            item.get("interval", "15m"), params, args.days, generator=generator,
         )
         if r:
             results.append(r)
