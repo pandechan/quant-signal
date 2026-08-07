@@ -9,8 +9,6 @@ import pandas as pd
 def add_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame:
     """为 K 线数据附加技术指标列。
 
-    列名与原 pandas-ta 命名保持一致，signals.py 无需改动。
-
     Args:
         df: 原始 K 线数据，需含 open/high/low/close/volume
         params: 指标参数，来自 strategy.yaml
@@ -28,6 +26,8 @@ def add_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame
     bbands_period = p.get("bbands_period", 20)
     stoch_period = p.get("stoch_period", 14)
     vol_ma_period = p.get("vol_ma_period", 20)
+    atr_period = p.get("atr_period", 14)
+    trend_ema = p.get("trend_ema", 50)
 
     out = df.copy()
     close = out["close"]
@@ -38,6 +38,9 @@ def add_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame
     # ---- EMA 快慢线 ----
     out[f"EMA_{ema_fast}"] = close.ewm(span=ema_fast, adjust=False).mean()
     out[f"EMA_{ema_slow}"] = close.ewm(span=ema_slow, adjust=False).mean()
+
+    # ---- 趋势均线（用于趋势过滤）----
+    out[f"EMA_{trend_ema}"] = close.ewm(span=trend_ema, adjust=False).mean()
 
     # ---- MACD ----
     macd = out[f"EMA_{ema_fast}"] - out[f"EMA_{ema_slow}"]
@@ -73,6 +76,9 @@ def add_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame
     # ---- ADX（趋势强度）----
     out["ADX_14"] = _adx(high, low, close, 14)
 
+    # ---- ATR（用于止损计算）----
+    out[f"ATR_{atr_period}"] = _atr(high, low, close, atr_period)
+
     # ---- 量比 ----
     out["vol_ma"] = volume.rolling(vol_ma_period).mean()
     out["vol_ratio"] = volume / out["vol_ma"].replace(0, np.nan)
@@ -80,23 +86,30 @@ def add_indicators(df: pd.DataFrame, params: dict | None = None) -> pd.DataFrame
     return out
 
 
+def _atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """计算 ATR（平均真实波幅）。"""
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
+        axis=1,
+    ).max(axis=1)
+    return tr.ewm(alpha=1 / period, adjust=False).mean()
+
+
 def _adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
     """计算 ADX（平均趋向指数）。"""
     prev_close = close.shift(1)
 
-    # True Range
     tr = pd.concat(
         [high - low, (high - prev_close).abs(), (low - prev_close).abs()],
         axis=1,
     ).max(axis=1)
 
-    # 方向移动
     up = high - high.shift(1)
     down = low.shift(1) - low
     plus_dm = up.where((up > down) & (up > 0), 0.0)
     minus_dm = down.where((down > up) & (down > 0), 0.0)
 
-    # Wilder 平滑
     atr = tr.ewm(alpha=1 / period, adjust=False).mean()
     plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr
     minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr

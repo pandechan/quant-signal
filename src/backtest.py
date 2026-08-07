@@ -1,10 +1,7 @@
 """回测模块：用历史数据验证策略表现。
 
-评估指标：总交易数、胜率、平均盈亏、盈亏比(profit factor)、
-总收益率、买入持有收益、最大回撤、夏普比率。
-
-无前视偏差：一次性计算全量指标后，逐根 K 线取"截至该行"的数据生成信号
-（ewm/rolling 每行值等价于截至该行的历史计算结果）。
+支持：ATR 止损/止盈/trailing stop、交易成本模拟、趋势过滤。
+无前视偏差：一次性计算全量指标后逐根 K 线回放。
 
 用法：
   python src/backtest.py              # 默认天数（15m=60天, 60m=365天）
@@ -35,7 +32,7 @@ from signals import RuleBasedGenerator
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backtest")
 
-WARMUP = 30  # 指标预热期，跳过前几根不稳定数据
+WARMUP = 30
 
 
 @dataclass
@@ -46,6 +43,7 @@ class Trade:
     exit_price: float | None = None
     pnl_pct: float = 0.0
     is_win: bool = False
+    exit_reason: str = ""
 
 
 @dataclass
@@ -66,71 +64,114 @@ class BacktestResult:
 
 
 def run_backtest(
-    symbol: str, name: str, interval: str, params: dict, days: int | None = None
+    symbol: str, name: str, interval: str, params: dict,
+    days: int | None = None, df_override: pd.DataFrame | None = None,
 ) -> BacktestResult | None:
-    """对单只股票运行回测。"""
-    if days is None:
-        days = 60 if interval == "15m" else 365
-    period = f"{days}d"
+    """对单只股票运行回测。
 
-    logger.info("回测 %s(%s) %s，拉取 %d 天数据", symbol, name, interval, days)
-    try:
-        df = fetch_klines(symbol, interval=interval, period=period)
-    except Exception as e:
-        logger.error("  %s 拉取数据失败: %s", symbol, e)
+    df_override 传入已加载的 DataFrame；若已含指标列则跳过 add_indicators（优化器复用）。
+    """
+    if df_override is not None:
+        df = df_override
+    else:
+        if days is None:
+            days = 60 if interval == "15m" else 365
+        logger.info("回测 %s(%s) %s，拉取 %d 天数据", symbol, name, interval, days)
+        try:
+            df = fetch_klines(symbol, interval=interval, period=f"{days}d")
+        except Exception as e:
+            logger.error("  %s 拉取数据失败: %s", symbol, e)
+            return None
+
+    if df is None or df.empty or len(df) < 50:
+        logger.warning("  %s 数据不足，跳过", symbol)
         return None
 
-    if df.empty or len(df) < 50:
-        logger.warning("  %s 数据不足(%d行)，跳过", symbol, len(df) if not df.empty else 0)
-        return None
-
-    # 一次性算好全部指标（无前视偏差）
-    df = add_indicators(df, params)
+    # 若未含指标列则计算（优化器传入已算好的可跳过）
+    if "ATR_14" not in df.columns:
+        df = add_indicators(df, params)
     df = df.dropna()
     if len(df) < WARMUP + 10:
         logger.warning("  %s 有效数据不足，跳过", symbol)
         return None
 
+    # 交易参数
+    stop_loss_atr = params.get("stop_loss_atr", 2.0)
+    take_profit_atr = params.get("take_profit_atr", 3.0)
+    trail_atr = params.get("trail_atr", 2.5)
+    cost = params.get("commission_pct", 0.0005) + params.get("slippage_pct", 0.0005)
+    atr_col = "ATR_14"
+
     generator = RuleBasedGenerator()
     trades: list[Trade] = []
-    position: dict | None = None  # None=空仓
+    position: dict | None = None
 
     for i in range(WARMUP, len(df)):
-        # 取截至 i 的切片生成信号（仅看最后一行，等价于截至该时刻）
-        slice_df = df.iloc[: i + 1]
-        sigs = generator.generate(symbol, name, interval, slice_df, params)
-        if not sigs:
+        row = df.iloc[i]
+        price = float(row["close"])
+        atr_val = float(row[atr_col]) if atr_col in df.columns and pd.notna(row.get(atr_col)) else None
+
+        # ---- 持仓中：检查止损/止盈/trailing ----
+        if position is not None:
+            if price > position["highest"]:
+                position["highest"] = price
+
+            exit_reason = None
+            if price <= position["stop_loss"]:
+                exit_reason = "止损"
+            elif price >= position["take_profit"]:
+                exit_reason = "止盈"
+            elif atr_val and price <= position["highest"] - trail_atr * atr_val:
+                exit_reason = "trailing"
+
+            if exit_reason:
+                exit_price = price * (1 - cost)
+                entry_price = position["entry_price"]
+                pnl = (exit_price - entry_price) / entry_price * 100
+                trades.append(Trade(
+                    entry_time=position["entry_time"],
+                    entry_price=entry_price,
+                    exit_time=df.index[i],
+                    exit_price=exit_price,
+                    pnl_pct=pnl,
+                    is_win=pnl > 0,
+                    exit_reason=exit_reason,
+                ))
+                position = None
             continue
 
-        sig = sigs[0]
-        price = float(df.iloc[i]["close"])
-        ts = df.index[i]
-
-        if sig.direction == "BUY" and position is None:
-            position = {"entry_time": ts, "entry_price": price}
-        elif sig.direction == "SELL" and position is not None:
-            pnl = (price - position["entry_price"]) / position["entry_price"] * 100
-            trades.append(Trade(
-                entry_time=position["entry_time"],
-                entry_price=position["entry_price"],
-                exit_time=ts,
-                exit_price=price,
-                pnl_pct=pnl,
-                is_win=pnl > 0,
-            ))
-            position = None
+        # ---- 空仓：看 BUY 信号进场 ----
+        slice_df = df.iloc[: i + 1]
+        sigs = generator.generate(symbol, name, interval, slice_df, params)
+        if sigs and sigs[0].direction == "BUY":
+            entry_price = price * (1 + cost)
+            if atr_val:
+                stop = entry_price - stop_loss_atr * atr_val
+                target = entry_price + take_profit_atr * atr_val
+            else:
+                stop = entry_price * 0.97
+                target = entry_price * 1.06
+            position = {
+                "entry_time": df.index[i],
+                "entry_price": entry_price,
+                "stop_loss": stop,
+                "take_profit": target,
+                "highest": entry_price,
+            }
 
     # 回测结束仍持仓则用最后收盘价平仓
     if position is not None:
         last_price = float(df.iloc[-1]["close"])
-        pnl = (last_price - position["entry_price"]) / position["entry_price"] * 100
+        exit_price = last_price * (1 - cost)
+        pnl = (exit_price - position["entry_price"]) / position["entry_price"] * 100
         trades.append(Trade(
             entry_time=position["entry_time"],
             entry_price=position["entry_price"],
             exit_time=df.index[-1],
-            exit_price=last_price,
+            exit_price=exit_price,
             pnl_pct=pnl,
             is_win=pnl > 0,
+            exit_reason="期末平仓",
         ))
 
     return _calc_metrics(symbol, name, interval, trades, df)
@@ -148,7 +189,6 @@ def _calc_metrics(symbol, name, interval, trades, df) -> BacktestResult:
         r.total_return_pct = 0.0
         return r
 
-    # 策略总收益（复利累计）
     equity = 1.0
     equity_curve = [1.0]
     for t in trades:
@@ -166,7 +206,6 @@ def _calc_metrics(symbol, name, interval, trades, df) -> BacktestResult:
     gross_loss = abs(sum(t.pnl_pct for t in losses))
     r.profit_factor = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
-    # 最大回撤
     peak = equity_curve[0]
     max_dd = 0.0
     for e in equity_curve:
@@ -177,7 +216,6 @@ def _calc_metrics(symbol, name, interval, trades, df) -> BacktestResult:
             max_dd = dd
     r.max_drawdown_pct = max_dd
 
-    # 夏普比率（用每笔交易收益，按年化交易频率缩放）
     rets = [t.pnl_pct / 100 for t in trades]
     if len(rets) > 1 and np.std(rets) > 0:
         if trades[-1].exit_time and trades[0].entry_time:
@@ -185,9 +223,7 @@ def _calc_metrics(symbol, name, interval, trades, df) -> BacktestResult:
             trades_per_year = len(trades) / span_days * 365
         else:
             trades_per_year = 50
-        r.sharpe_ratio = float(
-            np.mean(rets) / np.std(rets) * math.sqrt(trades_per_year)
-        )
+        r.sharpe_ratio = float(np.mean(rets) / np.std(rets) * math.sqrt(trades_per_year))
 
     return r
 
@@ -197,16 +233,16 @@ def _print_results(results: list[BacktestResult]) -> None:
         print("\n无回测结果\n")
         return
 
-    print("\n" + "=" * 95)
+    print("\n" + "=" * 100)
     print(f"{'Symbol':<8} {'Intv':<5} {'Trades':<7} {'WinRate':<8} {'Return':<9} "
           f"{'BuyHold':<9} {'PF':<6} {'MaxDD':<8} {'Sharpe':<7}")
-    print("-" * 95)
+    print("-" * 100)
     for r in results:
         pf = "inf" if math.isinf(r.profit_factor) else f"{r.profit_factor:.2f}"
         print(f"{r.symbol:<8} {r.interval:<5} {r.total_trades:<7} {r.win_rate:>6.1f}%  "
               f"{r.total_return_pct:>+7.1f}%  {r.buy_hold_return_pct:>+7.1f}%  "
               f"{pf:>5}  {r.max_drawdown_pct:>+7.1f}%  {r.sharpe_ratio:>5.2f}")
-    print("=" * 95)
+    print("=" * 100)
 
     avg_win = np.mean([r.win_rate for r in results])
     avg_ret = np.mean([r.total_return_pct for r in results])

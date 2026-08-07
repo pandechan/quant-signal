@@ -10,6 +10,20 @@ strategy:
   stoch_period: 14
   vol_ma_period: 20
   vol_surge_ratio: 1.5   # 量比阈值
+  atr_period: 14
+  trend_ema: 50          # 趋势判断均线周期
+
+  # 趋势过滤：上涨趋势才做多，下跌/震荡空仓
+  use_trend_filter: true
+
+  # 止损/止盈（ATR 倍数，进场时计算）
+  stop_loss_atr: 2.0     # 止损价 = entry - 2*ATR
+  take_profit_atr: 3.0   # 止盈价 = entry + 3*ATR
+  trail_atr: 2.5         # trailing stop = 持仓最高价 - 2.5*ATR
+
+  # 交易成本（回测模拟）
+  commission_pct: 0.0005  # 手续费 0.05%/笔
+  slippage_pct: 0.0005    # 滑点 0.05%/笔
 
   # 信号去重：同一股票同方向信号最小间隔（分钟）
   dedup_minutes: 60
