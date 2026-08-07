@@ -15,4 +15,4 @@ strategy:
   dedup_minutes: 60
 
   # 置信度阈值：低于此值不推送
-  min_confidence: 2
+  min_confidence: 4

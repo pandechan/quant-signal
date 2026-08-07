@@ -6,7 +6,7 @@ watchlist:
     interval: 15m
   - symbol: GOOG
     name: 谷歌
-    interval: 15m
+    interval: 60m
   - symbol: NVDA
     name: 英伟达
     interval: 15m
@@ -18,7 +18,7 @@ watchlist:
     interval: 15m
   - symbol: TQQQ
     name: 纳指三倍ETF
-    interval: 15m
+    interval: 60m
   - symbol: CRCL
     name: Circle
     interval: 15m
@@ -30,7 +30,7 @@ watchlist:
     interval: 15m
   - symbol: SPCX
     name: SPCX
-    interval: 15m
+    interval: 60m
   - symbol: SKHY
     name: SKHY
     interval: 15m
