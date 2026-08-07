@@ -6,7 +6,8 @@
 ## 功能
 
 - 多股票、多周期（15m / 60m）技术分析
-- 指标：EMA、MACD、RSI、KDJ、布林带、ADX、量比
+- 数据源：**Alpaca 实时数据**（优先），未配置时自动回退 yfinance
+- 指标：EMA、MACD、RSI、KDJ、布林带、ADX、量比（纯 pandas 实现）
 - 规则引擎生成买卖信号，带置信度分级
 - 仅在美股交易时段触发，自动处理节假日与夏令时
 - 信号去重，避免重复骚扰
@@ -17,32 +18,52 @@
 
 ### 1. Fork 或克隆本仓库
 
-### 2. 配置飞书机器人
+### 2. 配置 Alpaca 数据源（实时数据，推荐）
+
+1. 注册 Alpaca paper trading 账号：https://app.alpaca.markets/
+2. 进入 API Keys 页面，创建一个新的 API Key
+3. 复制 **API Key ID** 和 **Secret Key**
+
+在 GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret：
+
+- `ALPACA_API_KEY` = API Key ID
+- `ALPACA_SECRET_KEY` = Secret Key
+
+> 未配置 Alpaca 时会自动回退 yfinance（有 15-20 分钟延迟），不影响运行。
+
+### 3. 配置飞书机器人
 
 1. 在飞书中创建一个群（或用现有群）
 2. 群设置 → 群机器人 → 添加机器人 → 选择「自定义机器人」
 3. 复制 webhook 地址（形如 `https://open.feishu.cn/open-apis/bot/v2/hook/xxxx`）
 4. （可选）启用「签名校验」，记下 secret
 
-在 GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret：
+在 GitHub Secrets 添加：
 
-- Name: `FEISHU_WEBHOOK`　Value: webhook 完整地址（必填）
-- Name: `FEISHU_SECRET`　Value: 签名密钥（启用加签才填，否则可不配）
+- `FEISHU_WEBHOOK` = webhook 完整地址（必填）
+- `FEISHU_SECRET` = 签名密钥（启用加签才填，否则可不配）
 
-### 3. 编辑关注列表
+### 4. 编辑关注列表
 
 修改 `config/watchlist.yaml`，添加你关注的股票代码。
 
-### 4. 手动测试
+### 5. 手动测试
 
-在仓库 Actions 页面选择「美股信号扫描」workflow → Run workflow → 勾选「跳过交易时段检查」即可立即验证推送。
+仓库 Actions 页面 →「美股信号扫描」→ Run workflow → 勾选「跳过交易时段检查」。
 
 ## 本地运行
 
 ```bash
 pip install -r requirements.txt
+
+# 数据源（二选一）
+export ALPACA_API_KEY=你的key_id        # 推荐，实时数据
+export ALPACA_SECRET_KEY=你的secret
+
+# 推送
 export FEISHU_WEBHOOK=你的webhook地址
-export FEISHU_SECRET=你的签名密钥    # 可选，未启用加签则不设
+export FEISHU_SECRET=你的签名密钥        # 可选
+
 python src/main.py --force
 ```
 
