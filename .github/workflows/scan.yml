@@ -1,0 +1,53 @@
+name: 美股信号扫描
+
+on:
+  schedule:
+    # UTC 时间，每15分钟触发一次，仅在美股可能交易的时段窗口内（13:00-21:59 UTC）
+    # 覆盖夏令时(13:30-20:00 UTC)与冬令时(14:30-21:00 UTC)
+    # 脚本内会精确判断交易日与交易时段，非交易时段直接退出
+    - cron: '*/15 13-21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 跳过交易时段检查（用于测试）
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 恢复去重状态缓存
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: pushed-${{ github.run_id }}
+          restore-keys: |
+            pushed-
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 执行信号扫描
+        run: |
+          ARGS=""
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ARGS="--force"
+          fi
+          python src/main.py $ARGS
+        env:
+          SERVERCHAN_SENDKEY: ${{ secrets.SERVERCHAN_SENDKEY }}
+          TZ: UTC

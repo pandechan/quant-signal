@@ -1,0 +1,18 @@
+# 策略参数与规则配置
+strategy:
+  # 指标参数
+  ema_fast: 12
+  ema_slow: 26
+  rsi_period: 14
+  rsi_overbought: 70
+  rsi_oversold: 30
+  bbands_period: 20
+  stoch_period: 14
+  vol_ma_period: 20
+  vol_surge_ratio: 1.5   # 量比阈值
+
+  # 信号去重：同一股票同方向信号最小间隔（分钟）
+  dedup_minutes: 60
+
+  # 置信度阈值：低于此值不推送
+  min_confidence: 2
