@@ -1,12 +1,36 @@
 # 关注的股票池
 # symbol: Yahoo Finance 代码; name: 显示名称; interval: 15m 或 60m
 watchlist:
-  - symbol: AAPL
-    name: 苹果
+  - symbol: NBIS
+    name: Nebius
+    interval: 15m
+  - symbol: GOOG
+    name: 谷歌
+    interval: 15m
+  - symbol: NVDA
+    name: 英伟达
+    interval: 15m
+  - symbol: MRVL
+    name: 迈威尔
+    interval: 15m
+  - symbol: PLTR
+    name: 帕兰提尔
+    interval: 15m
+  - symbol: TQQQ
+    name: 纳指三倍ETF
+    interval: 15m
+  - symbol: CRCL
+    name: Circle
+    interval: 15m
+  - symbol: RKLB
+    name: 火箭实验室
     interval: 15m
   - symbol: TSLA
     name: 特斯拉
     interval: 15m
-  - symbol: NVDA
-    name: 英伟达
-    interval: 60m
+  - symbol: SPCX
+    name: SPCX
+    interval: 15m
+  - symbol: SKHY
+    name: SKHY
+    interval: 15m
